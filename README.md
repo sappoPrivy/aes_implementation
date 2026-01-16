@@ -1,4 +1,4 @@
-# Application_of_Crypthography
+# Application of Crypthography
 **Problem A: AES Encryption**
 
 
