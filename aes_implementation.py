@@ -195,8 +195,8 @@ def xtime(x):
     # Mask to 8 bits
     return x & 0xFF
 
+# Given multiplier in gf
 def gf(a, b):
-    
     if a == 1:
         return b
     elif a == 2:
