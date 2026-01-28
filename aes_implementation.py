@@ -1,4 +1,5 @@
 import sys
+import numpy as np
 
 # Read key and blocks
 input = bytes.fromhex(sys.stdin.read())
@@ -13,11 +14,11 @@ print("Key:", init_key)
 print("Blocks:", blocks)
 
 # Rotate the word's bytes one byte to the left in cyclic manner
-def rot_word(w):
-    # 1. Rotate to left 8 bits
-    # 2. Also rotate right 24 bits so last 8 bits are filling out empty bits front
+def rot_word(w, num_bytes):
+    # 1. Rotate to left (num_bytes*8) bits
+    # 2. Also rotate right 24 bits so first (num_bytes*8) bits are filling out empty bits
     # 3. Ensure length is always 4 bytes (32 bits)
-    return ((w << 8) | (w>>(32-8))) & 0xFFFFFFFF
+    return ((w << (num_bytes*8)) | (w>>(32-(num_bytes*8)))) & 0xFFFFFFFF
 
 # Standard S-box (256 entries)
 sbox = [
@@ -74,41 +75,220 @@ word_count=4
 # Total number of words for the round keys
 tot_words = (num_rounds+1)*word_count
 
-# The word array contains 44 words with 4 bytes each
-W=[None]*tot_words
-
-print('-------KEY EXPANSION---------')
-
-# Initialize round key 0 with the initial key, dividing into 4 bytes each
-W[0:4]=[int.from_bytes(init_key[i:i+4], "big") for i in range(0, len(init_key), 4)]
-print("Initial words:", W[0:4])
-
-# Generate round keys via key expansion method
-for i in range(word_count, tot_words):
-    print("----------------")
-    # if it is a multiple of 4
-    if i % word_count == 0:
-        rot=rot_word(W[i-1])        # Shift word one byte to left
-        sub=sub_word(W[i-1])        # Substitute each byte in word
-        rc=rcon[i // word_count]    # Get round constant value for this round
-        w = rot ^ sub ^ rc
-    else:
-      w = W[i-1] ^ W[i-word_count]
-    W[i] = w
-    print(f'Word {i}: {W[i]}')
-print("----------------\nAll words:", W)
-
-print('-------KEY GENERATION---------')
-round_keys=[b'']*(num_rounds+1)
-for i in range(0, len(W)):
-    print('Round:',i//word_count)
-    print(W[i].to_bytes(4, 'big'))
-    # Append the 4 bytes sequentielly for round (i//4) key
-    round_keys[i//word_count] += W[i].to_bytes(4, 'big')
+# Expand keys using words
+def key_expansion():
+    print('-------KEY EXPANSION---------')
+    # The word array contains 44 words with 4 bytes each
+    W=[None]*tot_words
     
-    # End of a round
-    if (i+1)//word_count != (i)//word_count:
-        print(f'Round key {i//word_count}: {round_keys[i//word_count]}')
+    # Initialize round key 0 with the initial key, dividing into 4 bytes each
+    W[0:4]=[int.from_bytes(init_key[i:i+4], "big") for i in range(0, len(init_key), 4)]
+    print("Initial words:", W[0:4])
+
+    # Generate round keys via key expansion method
+    for i in range(word_count, tot_words):
+        print("----------------")
+        # if it is a multiple of 4
+        if i % word_count == 0:
+            t=rot_word(W[i-1], 1)           # Shift word one byte to left
+            t=sub_word(t)                   # Substitute each byte in word
+            rc=rcon[i // 4]                 # Get round constant value for this round
+            w = W[i-4]^ t ^ rc              # w_i=wi-4 xor sub(rot(wi-1)) xor rcon
+        else:
+            w = W[i-1] ^ W[i-4]
+        W[i] = w
+        print(f'Word {i}: {W[i]}')
+    print("----------------\nAll words:", W)
+    return W
+
+# Generate round keys using the words from key expansion
+def key_generation(W):
+    print('-------KEY GENERATION---------')
+
+    # Create round keys with 4 inner elements, each 4 bytes, tot 16 bytes
+    round_keys = [[0 for _ in range(4)] for _ in range(num_rounds+1)]
+    for i in range(0, len(W)):
+        print('Round:',i//word_count)
+        print(W[i].to_bytes(4, 'big'))
+        
+        # Set the 4 bytes as element (i mod 4) for round (i//4) key, meaning e.g. element 0-3 at round 0-10
+        round_keys[i//word_count][i % 4] = W[i]
+        
+        # End of a round with finalized key
+        if (i+1)//word_count != (i)//word_count:
+            print(f'Round key {i//word_count}: {round_keys[i//word_count]}')
+    print("----------------")
+    return round_keys
+
+def partition_blocks():
+    # Create blocks with 4x4 matrices, each 16 bytes total, column wise
+    part_blocks = [[[0]*4 for _ in range(4)] for _ in range(len(blocks))]
+    for idx_block in range(len(blocks)):
+        for idx_col in range(4):
+            for idx_row in range(4):
+                part_blocks[idx_block][idx_row][idx_col] = blocks[idx_block][4*idx_col + idx_row]
+    print('Blocks partitioned in 4x4 matrices: ',part_blocks)
+    return part_blocks
+
+# Perform xor operation for block with the round key
+def add_round_key(b, k):
+    
+    # Result matrix
+    res_matrix = [[0]*4 for _ in range(4)]
+    
+    # Column wise xor with a word of round key
+    for idx_col in range(len(b)):
+        
+        # Extract the column word and round key word
+        col_word = (b[0][idx_col] << 24) | (b[1][idx_col] << 16) | (b[2][idx_col] << 8) | b[3][idx_col]
+        key_word = k[idx_col]
+        res_word = col_word ^ key_word
+        
+        # Turn resulting word into a column with 1 byte in each
+        res_matrix[0][idx_col] = (res_word >> 24) & 0xFF
+        res_matrix[1][idx_col] = (res_word >> 16) & 0xFF  
+        res_matrix[2][idx_col] = (res_word >> 8)  & 0xFF
+        res_matrix[3][idx_col] = res_word & 0xFF
+        
+    return res_matrix
+
+# Substitute each byte in the block
+def sub_bytes(b):
+    
+    # Result matrix
+    res_matrix = [[0]*4 for _ in range(4)]
+    
+    # For each byte replace with corresponding sbox element
+    for idx_row, (b0, b1, b2, b3) in enumerate(b):
+        res_matrix[idx_row] = [sbox[b0], sbox[b1], sbox[b2], sbox[b3]]
+    return res_matrix
+
+# Shift the bytes in each row of the block
+def shift_rows(b):    
+    print("Shift rows for block", b)
+    
+    # Incrementally higher bytes are shifted for each row, WHY
+    for idx_row, (b0, b1, b2, b3) in enumerate(b):
+        
+        # Extract bytes to create a word
+        row_word = (b0 << 24) | (b1 << 16) | (b2 << 8) | b3
+        
+        # Rotate the word
+        rot_word = ((row_word << (idx_row*8)) | (row_word>>(32-(idx_row*8)))) & 0xFFFFFFFF
+        
+        # Turn resulting word into a row with 1 byte in each
+        b[idx_row] = [(rot_word >> 24) & 0xFF, (rot_word >> 16) & 0xFF,(rot_word >> 8)  & 0xFF,rot_word & 0xFF]
+    return b
+
+# Multiplication in gf
+def xtime(x):
+    
+    # Multiplying two in polynomial form
+    x <<= 1
+    
+    # Check if nine bits long
+    if x & 0x100:
+        
+        # Reduce modulo AES polynomial
+        x ^= 0x1B
+        
+    # Mask to 8 bits
+    return x & 0xFF
+
+def gf(a, b):
+    
+    if a == 1:
+        return b
+    elif a == 2:
+        return xtime(b)
+    elif a == 3:
+        return xtime(b) ^ b
+
+# Mix each column 
+def mix_column(col, m):
+    
+    # Column with bytes
+    b0, b1, b2, b3 = col
+    
+    # Resulting column
+    res_col = [0]*4
+    
+    # For each row in matrix xor accordingly with column
+    for idx, (a0, a1, a2, a3) in enumerate(m):
+        res_col[idx] = gf(a0, b0) ^gf(a1, b1) ^ gf(a2, b2) ^ gf(a3, b3)
+    return res_col
+
+# Mix all columns using a fixed matrix
+def mix_columns(b):
+    fixed_matrix = [
+      [0x02, 0x03, 0x01, 0x01],
+      [0x01, 0x02, 0x03, 0x01],
+      [0x01, 0x01, 0x02, 0x03],
+      [0x03, 0x01, 0x01, 0x02]
+    ]
+    # Result matrix
+    res_matrix = [[0]*4 for _ in range(4)]
+    
+    
+    for idx_col in range(len(b)):
+        col = b[0][idx_col], b[1][idx_col], b[2][idx_col], b[3][idx_col]
+        b0, b1, b2, b3 = mix_column(col, fixed_matrix)
+        
+        # Turn resulting word into a column with 1 byte in each
+        res_matrix[0][idx_col] = b0
+        res_matrix[1][idx_col] = b1
+        res_matrix[2][idx_col] = b2
+        res_matrix[3][idx_col] = b3
+    return res_matrix
 
 
-print('-------AES TRANSFORMATION---------')
+# Flatten a matrix and compute the hex values
+def matrix_to_hex(b):
+    b_list = []
+    
+    # For each byte in the 4x4 matrix add it to a one dimensional list
+    for idx_col in range(4):
+        for idx_row in range(4):
+            b_list.append(b[idx_row][idx_col])
+            
+    # Convert to hex values
+    return bytes(b_list).hex().upper()
+
+def aes_transformation(part_blocks):
+    print('-------AES TRANSFORMATION---------')
+    part_blocks = [add_round_key(part_blocks[i], round_keys[0]) for i in range(len(part_blocks))]
+    print(f'Add round key: {part_blocks[0]}')
+    for i in range(1, num_rounds+1):
+        print(f'-------Round {i}-------')
+        
+        part_blocks[0]=sub_bytes(part_blocks[0])
+        print('Substitute bytes:',part_blocks[0])
+        
+        part_blocks[0]=shift_rows(part_blocks[0])
+        print('Shift rows:',part_blocks[0])
+        
+        # Mix columns is not used in the last round
+        if i!=10:
+            part_blocks[0]=mix_columns(part_blocks[0])
+            print('Mix columns: ', part_blocks[0])
+        
+        part_blocks[0]=add_round_key(part_blocks[0], round_keys[i])
+        print(f'Add round key:', part_blocks[0])
+    return part_blocks
+
+# Output the final cipher of all blocks
+def cipher_output(part_blocks):
+    enc_output = ""
+    for i in range(0, len(part_blocks)):
+        
+        # Append each block cipher in hex
+        enc_output += matrix_to_hex(part_blocks[i])
+
+    print("Final encrypted blocks",enc_output)
+
+if __name__ == "__main__":
+    W=key_expansion()
+    round_keys = key_generation(W)
+    part_blocks = partition_blocks()
+    cipher_blocks = aes_transformation(part_blocks)
+    cipher_output(cipher_blocks)
