@@ -1,5 +1,4 @@
 import sys
-import numpy as np
 
 # Standard S-box (256 entries)
 sbox = [
@@ -36,11 +35,34 @@ rcon = [
     0x36000000
 ]    
 
+# Read the initial key and blocks
+def read_input():
+    
+    # Read key and blocks
+    # input = bytes.fromhex(sys.stdin.buffer.read())
+    # input = sys.stdin.buffer.read()
+    raw = sys.stdin.read() #.strip().replace(" ", "").replace("\n", "")
+    input = bytes.fromhex(raw)
+    init_key = input[0:16]                                          # Initial keys is 16 bytes (32 hex values)
+    m = input[16:]                                                  # The rest of input is the message
+    input_blocks = [m[i:i+16] for i in range(0, len(m), 16)]        # Each block is 16 bytes (32 hex values)
+    # print(input_blocks)
+    for i in range(len(input_blocks)):
+        if len(input_blocks[i]) < 16:
+            input_blocks[i] += bytes(16 - len(input_blocks[i]))
+
+    
+    # Check inputs
+    # print('-------INPUTS---------')
+    # print("The input:", input)
+    # print("Key:", init_key)
+    # print("Blocks:", input_blocks)
+    
+    return init_key, input_blocks
+
 # Rotate the word's bytes one byte to the left in cyclic manner
 def rot_word(w):
-    # 1. Rotate to left 8 bits
-    # 2. Also rotate right 24 bits so first 8 bits are filling out empty bits
-    # 3. Ensure length is always 4 bytes (32 bits)
+    # Rotate to left 8 bits, rotate right 24 bits so first 8 bits are filling out empty bits, ensure length is always 4 bytes (32 bits)
     return ((w << 8) | (w>>(32-8))) & 0xFFFFFFFF
 
 # Replace each byte in word w with entry in the AES S-box
@@ -52,7 +74,7 @@ def sub_word(w):
     
     # For each byte substitute it with b' = sbox[b]
     for idx, b in enumerate(bytes_list):
-        print(f'{b} -> {sbox[b]}')
+        # print(f'{b} -> {sbox[b]}')
         bytes_list[idx]=sbox[b]
     
     # Turn into resulting word with 4 bytes
@@ -61,56 +83,59 @@ def sub_word(w):
 
 # Expand keys using words
 def key_expansion(init_key, tot_words, word_count):
-    print('-------KEY EXPANSION---------')
     # The word array contains 44 words with 4 bytes each
     W=[None]*tot_words
     
     # Initialize round key 0 with the initial key, dividing into 4 bytes each
     W[0:4]=[int.from_bytes(init_key[i:i+4], "big") for i in range(0, len(init_key), 4)]
-    print("Initial words:", W[0:4])
+    # print("Initial words:", W[0:4])
 
     # Generate round keys via key expansion method
     for i in range(word_count, tot_words):
-        print("----------------")
-        temp = W[i-1]
+        temp = W[i-1]                     # Previous word
         # if it is a multiple of 4
         if i % word_count == 0:
-            t=rot_word(temp)                # Shift word one byte to left
-            t=sub_word(t)                   # Substitute each byte in word
-            rc=rcon[i // 4]                 # Get round constant value for this round
-            temp = t ^ rc                   # sub(rot(wi-1)) xor rcon
+            t=rot_word(temp)              # Shift word one byte to left
+            t=sub_word(t)                 # Substitute each byte in word
+            rc=rcon[i // 4]               # Get round constant value for this round
+            temp = t ^ rc                 # sub(rot(wi-1)) xor rcon
         W[i] = W[i-4] ^ temp
-        print(f'Word {i}: {W[i]}')
-    print("----------------\nAll words:", W)
+        # print(f'Word {i}: {W[i]}')
+    
     return W
 
 # Generate round keys using the words from key expansion
 def key_generation(W, num_rounds, word_count):
-    print('-------KEY GENERATION---------')
-
     # Create round keys with 4 inner elements, each 4 bytes, tot 16 bytes
     round_keys = [[0 for _ in range(4)] for _ in range(num_rounds+1)]
+    
+    # Iterate through the words
     for i in range(0, len(W)):
-        print('Round:',i//word_count)
-        print(W[i].to_bytes(4, 'big'))
+        # print('Round:',i//word_count)
+        # print(W[i].to_bytes(4, 'big'))
         
         # Set the 4 bytes as element (i mod 4) for round (i//4) key, meaning e.g. element 0-3 at round 0-10
         round_keys[i//word_count][i % 4] = W[i]
         
         # End of a round with finalized key
-        if (i+1)//word_count != (i)//word_count:
-            print(f'Round key {i//word_count}: {round_keys[i//word_count]}')
-    print("----------------")
+        # if (i+1)//word_count != (i)//word_count:
+        #     print(f'Round key {i//word_count}: {round_keys[i//word_count]}')
+    
     return round_keys
 
 # Create states with 4x4 matrices, column wise
 def block_to_state(input_blocks):
+    
+    # Initialize list of 4x4 matrices
     states = [[[0]*4 for _ in range(4)] for _ in range(len(input_blocks))]
+    
+    # Fill the states with the input blocks
     for idx_block in range(len(input_blocks)):
         for idx_col in range(4):
             for idx_row in range(4):
                 states[idx_block][idx_row][idx_col] = input_blocks[idx_block][4*idx_col + idx_row]
-    print('Blocks partitioned in 4x4 matrices: ',states)
+    
+    # print('States: ',states)
     return states
 
 # Perform xor operation for block with the round key
@@ -144,11 +169,11 @@ def sub_bytes(b):
     # For each byte replace with corresponding sbox element
     for idx_row, (b0, b1, b2, b3) in enumerate(b):
         res_matrix[idx_row] = [sbox[b0], sbox[b1], sbox[b2], sbox[b3]]
+    
     return res_matrix
 
 # Shift the bytes in each row of the block
-def shift_rows(b):    
-    print("Shift rows for block", b)
+def shift_rows(b):
     
     # Incrementally higher bytes are shifted for each row, WHY
     for idx_row, (b0, b1, b2, b3) in enumerate(b):
@@ -161,6 +186,7 @@ def shift_rows(b):
         
         # Turn resulting word into a row with 1 byte in each
         b[idx_row] = [(rot_word >> 24) & 0xFF, (rot_word >> 16) & 0xFF,(rot_word >> 8)  & 0xFF,rot_word & 0xFF]
+    
     return b
 
 # Multiplication in gf
@@ -208,10 +234,11 @@ def mix_columns(b):
       [0x01, 0x01, 0x02, 0x03],
       [0x03, 0x01, 0x01, 0x02]
     ]
+    
     # Result matrix
     res_matrix = [[0]*4 for _ in range(4)]
     
-    
+    # Perform mix operations for each column
     for idx_col in range(len(b)):
         col = b[0][idx_col], b[1][idx_col], b[2][idx_col], b[3][idx_col]
         b0, b1, b2, b3 = mix_column(col, fixed_matrix)
@@ -237,62 +264,58 @@ def matrix_to_hex(b):
     return bytes(b_list).hex().upper()
 
 # AES transformation for one block at a time
-def cipher(block, num_rounds):
-    print('-------AES TRANSFORMATION---------')
+def cipher(block, round_keys, num_rounds):
+    
+    # Initial operation with intiial key
     block = add_round_key(block, round_keys[0])
-    print(f'Add round key: {block[0]}')
-    for i in range(1, num_rounds+1):                # loop 1 through 10
-        print(f'-------Round {i}-------')
+    # print(f'Add round key: {block[0]}')
+    
+    # Perform aes transformation on 1-10 rounds
+    for i in range(1, num_rounds+1):              
+        # print(f'Round {i}')
         
         block=sub_bytes(block)
-        print('Substitute bytes:',block)
+        # print('Substitute bytes:',block)
         
         block=shift_rows(block)
-        print('Shift rows:',block)
+        # print('Shift rows:',block)
         
         # Mix columns is not used in the last round
         if i!=num_rounds:
             block=mix_columns(block)
-            print('Mix columns: ', block)
+            # print('Mix columns: ', block)
         
         block=add_round_key(block, round_keys[i])
-        print(f'Add round key:', block)
+        # print(f'Add round key:', block)
     return block
 
 # Output the final cipher of all blocks
 def cipher_output(blocks):
     output = ""
     for i in range(0, len(blocks)):
-        
-        # Append each block cipher in hex
-        output += matrix_to_hex(blocks[i])
-
-    print("Final encrypted blocks",output)
+        output += matrix_to_hex(blocks[i])      # Append each block cipher in hex
+    print(output)
 
 if __name__ == "__main__":
-    # Read key and blocks
-    input = bytes.fromhex(sys.stdin.read())
-    init_key = input[0:16]                                          # Initial keys is 16 bytes (32 hex values)
-    m = input[16:]                                                  # The rest of input is the message
-    input_blocks = [m[i:i+16] for i in range(0, len(m), 16)]        # Each block is 16 bytes (32 hex values)
-
-    # Check inputs
-    print('-------INPUTS---------')
-    print("The input:", input)
-    print("Key:", init_key)
-    print("Blocks:", input_blocks)
     
-    # Number of rounds for 16 bytes (128 bits) key
-    num_rounds = 10
-
-    # Each round key contains 4 words
-    word_count=4
-
-    # Total number of words for the round keys
-    tot_words = (num_rounds+1)*word_count
+    # Initial variables
+    init_key, input_blocks = read_input()   # Input key and blocks
+    num_rounds = 10                         # Number of rounds for 16 bytes (128 bits) key
+    word_count=4                            # Each round key contains 4 words
+    tot_words = (num_rounds+1)*word_count   # Total number of words for the round keys
+    
+    # Expand the words for key generation
     W=key_expansion(init_key, tot_words, word_count)
+    
+    # Generate keys
     round_keys = key_generation(W, num_rounds, word_count)
-    part_blocks = block_to_state(input_blocks)
-    for idx, block in enumerate(part_blocks):
-        part_blocks[idx] = cipher(block, num_rounds)
-    cipher_output(part_blocks)
+    
+    # Create list of states from the input blocks
+    states = block_to_state(input_blocks)
+    
+    # Compute the cipher for each block
+    for idx, block in enumerate(states):
+        states[idx] = cipher(block, round_keys, num_rounds)
+        
+    # Output the ciphers
+    cipher_output(states)
