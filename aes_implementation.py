@@ -35,31 +35,6 @@ rcon = [
     0x36000000
 ]    
 
-# Read the initial key and blocks
-def read_input():
-    
-    # Read key and blocks
-    # input = bytes.fromhex(sys.stdin.buffer.read())
-    # input = sys.stdin.buffer.read()
-    raw = sys.stdin.read() #.strip().replace(" ", "").replace("\n", "")
-    input = bytes.fromhex(raw)
-    init_key = input[0:16]                                          # Initial keys is 16 bytes (32 hex values)
-    m = input[16:]                                                  # The rest of input is the message
-    input_blocks = [m[i:i+16] for i in range(0, len(m), 16)]        # Each block is 16 bytes (32 hex values)
-    # print(input_blocks)
-    for i in range(len(input_blocks)):
-        if len(input_blocks[i]) < 16:
-            input_blocks[i] += bytes(16 - len(input_blocks[i]))
-
-    
-    # Check inputs
-    # print('-------INPUTS---------')
-    # print("The input:", input)
-    # print("Key:", init_key)
-    # print("Blocks:", input_blocks)
-    
-    return init_key, input_blocks
-
 # Rotate the word's bytes one byte to the left in cyclic manner
 def rot_word(w):
     # Rotate to left 8 bits, rotate right 24 bits so first 8 bits are filling out empty bits, ensure length is always 4 bytes (32 bits)
@@ -123,20 +98,19 @@ def key_generation(W, num_rounds, word_count):
     
     return round_keys
 
-# Create states with 4x4 matrices, column wise
-def block_to_state(input_blocks):
+# Create state with 4x4 matrix, column wise
+def block_to_state(block):
     
-    # Initialize list of 4x4 matrices
-    states = [[[0]*4 for _ in range(4)] for _ in range(len(input_blocks))]
+    # Initialize 4x4 matrices
+    state = [[0]*4 for _ in range(4)]
     
-    # Fill the states with the input blocks
-    for idx_block in range(len(input_blocks)):
-        for idx_col in range(4):
-            for idx_row in range(4):
-                states[idx_block][idx_row][idx_col] = input_blocks[idx_block][4*idx_col + idx_row]
+    # Fill the state with the input block column wise
+    for idx_col in range(4):
+        for idx_row in range(4):
+            state[idx_row][idx_col] = block[4*idx_col + idx_row]
     
-    # print('States: ',states)
-    return states
+    # print('State: ',state)
+    return state
 
 # Perform xor operation for block with the round key
 def add_round_key(b, k):
@@ -203,51 +177,33 @@ def xtime(x):
     # Mask to 8 bits
     return two_x & 0xFF
 
-# Repeated application of xtimes in gf
-def gf(a, b):
-    if a == 1:                # Identity 1*b = b
-        return b
-    elif a == 2:              # 2*b = xtime(b)
-        return xtime(b)
-    elif a == 3:              # 3*b = (02 xor 01)*b = 2*b xor 1b = xtime(b) xor b
-        return xtime(b) ^ b
+# Global precomputed gf multiplication
+gf2 = [0]*256
+gf3 = [0]*256
 
-# Mix each column 
-def mix_column(col, m):
-    
-    # Column with bytes
-    b0, b1, b2, b3 = col
-    
-    # Resulting column
-    res_col = [0]*4
-    
-    # For each row in matrix xor accordingly with column
-    for idx, (a0, a1, a2, a3) in enumerate(m):
-        res_col[idx] = gf(a0, b0) ^gf(a1, b1) ^ gf(a2, b2) ^ gf(a3, b3)
-    return res_col
+# Faster execution with precomputed gf multiplication
+for x in range(256):
+                          # Identity 1*b = b
+    gf2[x] = xtime(x)     # 2*b = xtime(b)
+    gf3[x] = gf2[x] ^ x   # 3*b = (02 xor 01)*b = 2*b xor 1b = xtime(b) xor b
 
 # Mix all columns using a fixed matrix
 def mix_columns(b):
-    fixed_matrix = [
-      [0x02, 0x03, 0x01, 0x01],
-      [0x01, 0x02, 0x03, 0x01],
-      [0x01, 0x01, 0x02, 0x03],
-      [0x03, 0x01, 0x01, 0x02]
-    ]
-    
+
     # Result matrix
     res_matrix = [[0]*4 for _ in range(4)]
     
     # Perform mix operations for each column
     for idx_col in range(len(b)):
-        col = b[0][idx_col], b[1][idx_col], b[2][idx_col], b[3][idx_col]
-        b0, b1, b2, b3 = mix_column(col, fixed_matrix)
+
+        # Each byte in the column
+        b0, b1, b2, b3 = b[0][idx_col], b[1][idx_col], b[2][idx_col], b[3][idx_col]
         
         # Turn resulting word into a column with 1 byte in each
-        res_matrix[0][idx_col] = b0
-        res_matrix[1][idx_col] = b1
-        res_matrix[2][idx_col] = b2
-        res_matrix[3][idx_col] = b3
+        res_matrix[0][idx_col] = gf2[b0] ^ gf3[b1] ^ b2 ^ b3
+        res_matrix[1][idx_col] = b0 ^ gf2[b1] ^ gf3[b2] ^ b3
+        res_matrix[2][idx_col] = b0 ^ b1 ^ gf2[b2] ^ gf3[b3]
+        res_matrix[3][idx_col] = gf3[b0] ^ b1 ^ b2 ^ gf2[b3]
     return res_matrix
 
 
@@ -290,16 +246,20 @@ def cipher(block, round_keys, num_rounds):
     return block
 
 # Output the final cipher of all blocks
-def cipher_output(blocks):
-    output = ""
-    for i in range(0, len(blocks)):
-        output += matrix_to_hex(blocks[i])      # Append each block cipher in hex
-    print(output)
+def cipher_output(block):
+    output = bytearray()
+    
+    # Each block columnwise
+    for idx_col in range(4):          
+        for idx_row in range(4):      
+            output.append(block[idx_row][idx_col])
+
+    sys.stdout.buffer.write(output)
 
 if __name__ == "__main__":
     
     # Initial variables
-    init_key, input_blocks = read_input()   # Input key and blocks
+    init_key = bytearray(sys.stdin.buffer.read(16))
     num_rounds = 10                         # Number of rounds for 16 bytes (128 bits) key
     word_count=4                            # Each round key contains 4 words
     tot_words = (num_rounds+1)*word_count   # Total number of words for the round keys
@@ -310,12 +270,18 @@ if __name__ == "__main__":
     # Generate keys
     round_keys = key_generation(W, num_rounds, word_count)
     
-    # Create list of states from the input blocks
-    states = block_to_state(input_blocks)
-    
     # Compute the cipher for each block
-    for idx, block in enumerate(states):
-        states[idx] = cipher(block, round_keys, num_rounds)
+    while True:
+
+        # Read the block
+        input_block = sys.stdin.buffer.read(16)
         
-    # Output the ciphers
-    cipher_output(states)
+        # Break when file ends
+        if not input_block:
+            break
+
+        # Transform block (byte list) to state (4x4 matrix)
+        state = block_to_state(input_block)
+        
+        # Output the ciphers
+        cipher_output(cipher(state, round_keys, num_rounds))
