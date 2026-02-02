@@ -199,7 +199,7 @@ def mix_columns(b):
         # Each byte in the column
         b0, b1, b2, b3 = b[0][idx_col], b[1][idx_col], b[2][idx_col], b[3][idx_col]
         
-        # Turn resulting word into a column with 1 byte in each
+        # Resulting column
         res_matrix[0][idx_col] = gf2[b0] ^ gf3[b1] ^ b2 ^ b3
         res_matrix[1][idx_col] = b0 ^ gf2[b1] ^ gf3[b2] ^ b3
         res_matrix[2][idx_col] = b0 ^ b1 ^ gf2[b2] ^ gf3[b3]
