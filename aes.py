@@ -1,3 +1,4 @@
+import random
 import sys
 
 # Standard S-box (256 entries)
@@ -35,6 +36,48 @@ rcon = [
     0x36000000
 ]    
 
+# Prime the cache by accessing the full sbox table as countermeasure against cache based access
+def priming():
+    # Dummy operation
+    operation = 0
+    
+    # Access each sbox element
+    for elem in sbox:
+        operation ^= elem
+
+# Constant pattern access by reading all elements inside the line as countermeasure against cache based access
+def constant_access(target_idx):
+    line = target_idx//64       # Cache line of the target element
+    start = line*64             # Start of the access in the line
+    end = (line+1)*64           # Start of the next line
+    target = 0
+    
+    # Access each element inside the cache line
+    for idx in range (start,end):
+        elem = sbox[inv_map[idx]]
+        isSelected = (idx == target_idx)
+        selected = (elem * isSelected)
+        target = target ^ selected
+    return target
+
+# Randomize the sbox layout
+def randomize_sbox():
+    global sbox, inv_map
+    
+    # Shuffle the entries
+    shuffled_nums = [i for i in range(256)]
+    random.shuffle(shuffled_nums)
+    
+    # Save the mapping
+    inv_map=[0]*256
+    for new_num, old_num in enumerate(shuffled_nums):
+        inv_map[old_num]=new_num
+    
+    # Apply the mapping
+    sbox = [sbox[s] for s in shuffled_nums]
+    
+    
+
 # Rotate the word's bytes one byte to the left in cyclic manner
 def rot_word(w):
     # Rotate to left 8 bits, rotate right 24 bits so first 8 bits are filling out empty bits, ensure length is always 4 bytes (32 bits)
@@ -50,7 +93,7 @@ def sub_word(w):
     # For each byte substitute it with b' = sbox[b]
     for idx, b in enumerate(bytes_list):
         # print(f'{b} -> {sbox[b]}')
-        bytes_list[idx]=sbox[b]
+        bytes_list[idx]=constant_access(b)
     
     # Turn into resulting word with 4 bytes
     res_word = (bytes_list[0]<< 24) | (bytes_list[1] << 16) | (bytes_list[2] << 8) | bytes_list[3]
@@ -70,6 +113,8 @@ def key_expansion(init_key, tot_words, word_count):
         temp = W[i-1]                     # Previous word
         # if it is a multiple of 4
         if i % word_count == 0:
+            # Countermeasure using priming before S-box access
+            priming()
             t=rot_word(temp)              # Shift word one byte to left
             t=sub_word(t)                 # Substitute each byte in word
             rc=rcon[i // 4]               # Get round constant value for this round
@@ -142,7 +187,7 @@ def sub_bytes(b):
     
     # For each byte replace with corresponding sbox element
     for idx_row, (b0, b1, b2, b3) in enumerate(b):
-        res_matrix[idx_row] = [sbox[b0], sbox[b1], sbox[b2], sbox[b3]]
+        res_matrix[idx_row] = [constant_access(b0), constant_access(b1), constant_access(b2), constant_access(b3)]
     
     return res_matrix
 
@@ -230,6 +275,9 @@ def cipher(block, round_keys, num_rounds):
     for i in range(1, num_rounds+1):              
         # print(f'Round {i}')
         
+        # Countermeasure using priming before S-box access
+        priming()
+        
         block=sub_bytes(block)
         # print('Substitute bytes:',block)
         
@@ -263,6 +311,9 @@ if __name__ == "__main__":
     num_rounds = 10                         # Number of rounds for 16 bytes (128 bits) key
     word_count=4                            # Each round key contains 4 words
     tot_words = (num_rounds+1)*word_count   # Total number of words for the round keys
+    
+    # Randomise as countermeasure
+    randomize_sbox()
     
     # Expand the words for key generation
     W=key_expansion(init_key, tot_words, word_count)
